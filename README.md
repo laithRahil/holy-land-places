@@ -6,7 +6,7 @@ Classification d'images par transfer learning : à partir d'une photo, le modèl
 - le Dôme du Rocher (Jérusalem)
 - l'église de Toutes-les-Nations, à Gethsémani (Jérusalem)
 
-**Démo :** https://LIEN-NETLIFY.netlify.app (le modèle tourne directement dans le navigateur)
+**Démo :** https://holy-land-demo.netlify.app (le modèle tourne directement dans le navigateur)
 
 Je viens de Bethléem. J'ai voulu travailler sur des lieux que je connais, avec très peu de données, ce qui est souvent le cas dans un vrai projet.
 
