@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lieux de Terre Sainte</title>
+<style>
+  :root {
+    --bg: #faf7f2; --card: #ffffff; --text: #2b2620; --muted: #6f665c;
+    --accent: #b8862b; --accent-soft: #f3e7cf; --border: #e6ddd0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17140f; --card: #221e18; --text: #f1ebe2; --muted: #b3a999;
+            --accent: #d9a84a; --accent-soft: #3a2f1c; --border: #3a332a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.5; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-family: Georgia, "Times New Roman", serif; font-weight: 600; font-size: 2rem; margin: 0 0 8px; }
+  .intro { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; margin-bottom: 16px; }
+  #drop { border: 2px dashed var(--border); border-radius: 12px; padding: 28px 16px; text-align: center;
+          cursor: pointer; transition: border-color .2s, background .2s; }
+  #drop.hover { border-color: var(--accent); background: var(--accent-soft); }
+  #drop strong { color: var(--accent); }
+  #preview { display: none; max-width: 100%; max-height: 360px; border-radius: 10px; margin: 0 auto 16px; }
+  .row { margin: 10px 0; }
+  .row .label { display: flex; justify-content: space-between; font-size: .95rem; margin-bottom: 4px; }
+  .bar { height: 10px; background: var(--accent-soft); border-radius: 6px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); border-radius: 6px; transition: width .5s; }
+  #verdict h2 { font-family: Georgia, serif; font-size: 1.35rem; margin: 0 0 6px; }
+  #verdict p { margin: 0; color: var(--muted); }
+  #status { color: var(--muted); font-size: .9rem; min-height: 1.4em; }
+  footer { color: var(--muted); font-size: .85rem; margin-top: 24px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Reconnaissance de lieux de Terre Sainte</h1>
+  <p class="intro">Envoyez une photo de la Basilique de la Nativité, du Dôme du Rocher ou de l'église de Gethsémani.
+     Le modèle devine le lieu. Il fonctionne <em>directement dans votre navigateur</em> : votre photo n'est envoyée nulle part.</p>
+
+  <div class="card">
+    <img id="preview" alt="Votre photo">
+    <div id="drop">
+      <div><strong>Choisir une photo</strong> ou la glisser ici</div>
+      <input id="file" type="file" accept="image/*" hidden>
+    </div>
+    <p id="status">Chargement du modèle…</p>
+  </div>
+
+  <div id="results" class="card hidden"></div>
+  <div id="verdict" class="card hidden"></div>
+
+  <footer>Méthode : ResNet18 pré-entraîné sur ImageNet (transfer learning) + régression logistique,
+    entraînés sur 38 photos. Le modèle ne connaît que ces 3 lieux.</footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script>
+// même ordre que ImageFolder (ordre alphabétique des dossiers)
+const CLASSES = ["dome_du_rocher", "gethsemani", "nativite"];
+const NOMS = {
+  nativite: "Basilique de la Nativité (Bethléem)",
+  dome_du_rocher: "Dôme du Rocher (Jérusalem)",
+  gethsemani: "Église de Toutes-les-Nations, Gethsémani (Jérusalem)",
+};
+const HISTOIRE = {
+  nativite: "Construite au-dessus de la grotte où, selon la tradition, Jésus est né. La première église date du IVᵉ siècle (empereur Constantin) ; elle a été reconstruite au VIᵉ siècle par Justinien. C'est l'une des plus anciennes églises encore utilisées au monde.",
+  dome_du_rocher: "Construit vers 691 sous le calife omeyyade Abd al-Malik, sur l'esplanade des Mosquées. C'est l'un des plus anciens monuments islamiques encore debout, reconnaissable à son dôme doré.",
+  gethsemani: "Construite entre 1919 et 1924 par l'architecte Antonio Barluzzi, au pied du mont des Oliviers. Elle s'appelle « de Toutes-les-Nations » car de nombreux pays ont participé à son financement. Elle abrite le rocher où, selon la tradition, Jésus a prié avant son arrestation.",
+};
+const SEUIL = 0.6;
+const MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225];
+
+const statusEl = document.getElementById("status");
+let session = null;
+
+ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
+ort.InferenceSession.create("modele.onnx")
+  .then(s => { session = s; statusEl.textContent = "Modèle prêt."; })
+  .catch(e => { statusEl.textContent = "Erreur de chargement du modèle : " + e.message; });
+
+// Resize(256) + CenterCrop(224) + Normalize, comme dans le notebook
+function preparer(img) {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 224;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  const s = 256 / Math.min(img.naturalWidth, img.naturalHeight);
+  const w = img.naturalWidth * s, h = img.naturalHeight * s;
+  ctx.drawImage(img, (224 - w) / 2, (224 - h) / 2, w, h);
+  const px = ctx.getImageData(0, 0, 224, 224).data;
+  const data = new Float32Array(3 * 224 * 224);
+  for (let i = 0; i < 224 * 224; i++) {
+    for (let c = 0; c < 3; c++) {
+      data[c * 224 * 224 + i] = (px[i * 4 + c] / 255 - MEAN[c]) / STD[c];
+    }
+  }
+  return new ort.Tensor("float32", data, [1, 3, 224, 224]);
+}
+
+function afficher(proba) {
+  const ordre = CLASSES.map((c, i) => [c, proba[i]]).sort((a, b) => b[1] - a[1]);
+  const res = document.getElementById("results");
+  res.innerHTML = "<strong>Probabilités</strong>" + ordre.map(([c, p]) =>
+    `<div class="row"><div class="label"><span>${NOMS[c]}</span><span>${(p * 100).toFixed(1)} %</span></div>
+     <div class="bar"><div style="width:${(p * 100).toFixed(1)}%"></div></div></div>`).join("");
+  res.classList.remove("hidden");
+
+  const [meilleur, pmax] = ordre[0];
+  const v = document.getElementById("verdict");
+  v.innerHTML = pmax < SEUIL
+    ? `<h2>Je ne suis pas sûr</h2><p>Ce lieu ne ressemble pas assez à ceux que je connais. Je reconnais seulement : ${Object.values(NOMS).join(", ")}.</p>`
+    : `<h2>${NOMS[meilleur]}</h2><p>${HISTOIRE[meilleur]}</p>`;
+  v.classList.remove("hidden");
+}
+
+async function analyser(file) {
+  if (!file) return;
+  if (!session) { statusEl.textContent = "Le modèle n'est pas encore prêt, réessayez dans un instant."; return; }
+  const img = document.getElementById("preview");
+  img.src = URL.createObjectURL(file);
+  await img.decode();
+  img.style.display = "block";
+  statusEl.textContent = "Analyse…";
+  const out = await session.run({ image: preparer(img) });
+  afficher(Array.from(out.proba.data));
+  statusEl.textContent = "";
+}
+
+const drop = document.getElementById("drop"), input = document.getElementById("file");
+drop.addEventListener("click", () => input.click());
+input.addEventListener("change", () => analyser(input.files[0]));
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("hover"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("hover"));
+drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("hover"); analyser(e.dataTransfer.files[0]); });
+</script>
+</body>
+</html>
